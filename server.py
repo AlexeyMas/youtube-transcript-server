@@ -1,27 +1,45 @@
+import subprocess
+import os
 from flask import Flask, request, jsonify
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptAvailable
 
 app = Flask(__name__)
 
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    
+    lang = request.args.get("lang", "en")
+
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
 
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    subtitle_file = f"{video_id}.vtt"
+
     try:
-        # Отримати субтитри англійською мовою
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        subtitles = "\n".join([entry['text'] for entry in transcript])
+        command = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player-client=android",  # Використовуємо мобільний клієнт
+            "--write-auto-sub",
+            "--sub-lang", lang,
+            "--skip-download",
+            "--output", f"{video_id}.vtt",
+            video_url
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
 
-        return jsonify({"video_id": video_id, "transcript": subtitles})
+        if result.returncode != 0:
+            return jsonify({"error": f"Не вдалося отримати субтитри. Код помилки: {result.returncode}, stderr: {result.stderr}"}), 500
 
-    except TranscriptsDisabled:
-        return jsonify({"error": "Subtitles are disabled for this video."}), 400
-    except NoTranscriptAvailable:
-        return jsonify({"error": "No subtitles available for this video."}), 400
+        if not os.path.exists(subtitle_file):
+            return jsonify({"error": f"Файл субтитрів {subtitle_file} не знайдено."}), 500
+
+        with open(subtitle_file, "r", encoding="utf-8") as f:
+            subtitles = f.readlines()
+
+        transcript_text = "\n".join(line.strip() for line in subtitles if "-->" not in line and "WEBVTT" not in line)
+
+        return jsonify({"video_id": video_id, "transcript": transcript_text})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
