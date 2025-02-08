@@ -12,28 +12,34 @@ def get_transcript():
         return jsonify({"error": "Missing video_id"}), 400
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    subtitle_file = f"{video_id}.en.vtt"
+    subtitle_file = f"{video_id}.vtt"  # Файл субтитрів
 
     try:
+        # Виконуємо команду yt-dlp для завантаження субтитрів
         command = [
             "yt-dlp",
             "--cookies", "cookies.txt",
             "--write-auto-sub",
             "--sub-lang", "en",
             "--skip-download",
-            "--output", subtitle_file,
+            "--output", f"{video_id}.vtt",  # Правильне ім'я файлу
             video_url
         ]
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
 
+        # Якщо yt-dlp завершився з помилкою
         if result.returncode != 0:
             return jsonify({"error": f"Не вдалося отримати субтитри. Код помилки: {result.returncode}, stderr: {result.stderr}"}), 500
 
-        # Читаємо файл і видаляємо таймінг
+        # Перевіряємо, чи створився файл субтитрів
+        if not os.path.exists(subtitle_file):
+            return jsonify({"error": f"Файл субтитрів {subtitle_file} не знайдено."}), 500
+
+        # Читаємо файл субтитрів
         with open(subtitle_file, "r", encoding="utf-8") as f:
             subtitles = f.readlines()
 
-        # Фільтруємо текст, щоб залишити тільки самі субтитри
+        # Видаляємо таймінги та зайві рядки (тільки текст субтитрів)
         transcript_text = "\n".join(line.strip() for line in subtitles if "-->" not in line and "WEBVTT" not in line)
 
         return jsonify({"video_id": video_id, "transcript": transcript_text})
