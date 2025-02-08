@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Перевіряємо, чи встановлений yt-dlp, і якщо ні — встановлюємо його
+# Перевіряємо, чи встановлено yt-dlp, і якщо ні — встановлюємо його
 def install_yt_dlp():
     try:
         subprocess.run(["yt-dlp", "--version"], check=True)
@@ -28,14 +28,17 @@ def get_transcript():
         command = ["yt-dlp", "--write-auto-sub", "--sub-lang", "en", "--skip-download", "-J", video_url]
         result = subprocess.run(command, capture_output=True, text=True)
 
-        if result.returncode != 0:
-            return jsonify({"error": "Не вдалося отримати субтитри"}), 500
+        print(f"Команда виконана: {' '.join(command)}")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
 
-        output = result.stdout
-        return jsonify({"video_id": video_id, "transcript": output})
+        if result.returncode != 0:
+            return jsonify({"error": f"Не вдалося отримати субтитри. Код помилки: {result.returncode}, stderr: {result.stderr}"}), 500
+
+        return jsonify({"video_id": video_id, "transcript": result.stdout})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
