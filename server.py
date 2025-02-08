@@ -26,7 +26,7 @@ def get_transcript():
     try:
         # Використовуємо yt-dlp для отримання субтитрів
         command = ["yt-dlp", "--write-auto-sub", "--sub-lang", "en", "--skip-download", "-J", video_url]
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
 
         print(f"Команда виконана: {' '.join(command)}")
         print(f"stdout: {result.stdout}")
