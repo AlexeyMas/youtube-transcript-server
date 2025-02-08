@@ -14,7 +14,7 @@ def get_transcript():
 
     try:
         # Використання yt-dlp для отримання субтитрів
-        command = ["yt-dlp", "--write-auto-sub", "--sub-lang", "en", "--skip-download", "-J", video_url]
+        command = ["/usr/local/bin/yt-dlp", "--write-auto-sub", "--sub-lang", "en", "--skip-download", "-J", video_url]
         result = subprocess.run(command, capture_output=True, text=True)
 
         if result.returncode != 0:
