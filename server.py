@@ -9,13 +9,13 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Файл з куками (якщо є)
-COOKIES_PATH = "cookies.txt"
+# Шлях до файлу cookies.txt
+COOKIES_PATH = "cookies.txt"  # Замініть на актуальний шлях, якщо потрібно
 
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    lang = request.args.get("lang")  # Мова (якщо None – отримуємо всі доступні)
+    lang = request.args.get("lang", "en")  # За замовчуванням - англійська
 
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
@@ -23,43 +23,41 @@ def get_transcript():
     try:
         logger.info(f"Fetching transcript for video: {video_id}, language: {lang}")
 
-        # Перевіряємо, чи файл куків існує
+        # Перевіряємо, чи файл cookies.txt існує
         cookies = COOKIES_PATH if os.path.exists(COOKIES_PATH) else None
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
-
+        
         # Отримуємо список доступних субтитрів
         available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookies)
 
-        # Якщо мова вказана, отримуємо її
-        if lang:
-            transcript = available_transcripts.find_transcript([lang]).fetch()
+        # Якщо є субтитри на запитану мову
+        if lang in [t.language_code for t in available_transcripts]:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang], cookies=cookies)
+
         else:
-            # Якщо мову не вказано – пробуємо отримати автоматичні або будь-які доступні
-            try:
-                transcript = available_transcripts.find_generated_transcript(["uk", "en"]).fetch()
-            except:
-                transcript = available_transcripts.find_manually_created_transcript(["uk", "en"]).fetch()
+            # Якщо немає ручних субтитрів → використовуємо авто-субтитри
+            auto_transcripts = [t.language_code for t in available_transcripts if t.is_generated]
 
-        # **ФІКС:** перевіряємо, чи `transcript` не `None`
-        if transcript is None:
-            logger.error(f"Transcript is None for video: {video_id}")
-            return jsonify({"error": f"No subtitles found for video {video_id}."}), 400
+            if auto_transcripts:
+                logger.info(f"Using auto-generated subtitles in {auto_transcripts[0]}")
+                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[auto_transcripts[0]], cookies=cookies)
 
-        # **ФІКС:** Декодуємо Unicode у читабельний текст
-        subtitles = "\n".join([entry["text"] for entry in transcript])
-        subtitles = subtitles.encode("utf-8").decode("unicode_escape")  # <=== ФІКС
+                # Якщо потрібно, додаємо можливість перекладу
+                if lang != auto_transcripts[0]:
+                    transcript = available_transcripts.find_generated_transcript([auto_transcripts[0]]).translate(lang).fetch()
 
+            else:
+                return jsonify({"error": "No available transcripts."}), 400
+
+        subtitles = "\n".join([entry['text'] for entry in transcript])
         return jsonify({"video_id": video_id, "transcript": subtitles})
 
     except TranscriptsDisabled:
-        logger.error(f"Subtitles are disabled for video: {video_id}")
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
     except NoTranscriptAvailable:
-        logger.error(f"No subtitles available for video: {video_id}")
-        return jsonify({"error": f"No subtitles available for video {video_id}."}), 400
+        return jsonify({"error": f"No subtitles available for {video_id} in {lang}."}), 400
     except Exception as e:
-        logger.error(f"Error fetching transcript for video: {video_id}. Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
