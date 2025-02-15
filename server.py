@@ -15,7 +15,7 @@ COOKIES_PATH = "cookies.txt"
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    lang = request.args.get("lang")  # Мова (якщо None – отримуємо всі доступні)
+    lang = request.args.get("lang")  # Мова (можна передавати будь-яку, якщо None – отримуємо всі доступні)
 
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
@@ -28,12 +28,26 @@ def get_transcript():
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
 
-        # Отримуємо субтитри
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang] if lang else None, cookies=cookies)
+        # **Отримуємо список доступних субтитрів**
+        available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookies)
 
-        # **ФІКС:** перевіряємо, чи API повернув `None`
-        if transcript is None or not isinstance(transcript, list):
-            logger.error(f"Transcript returned None for video: {video_id}")
+        # **Виводимо список доступних мов у лог**
+        transcript_languages = [t.language_code for t in available_transcripts]
+        logger.info(f"Available subtitles for {video_id}: {transcript_languages}")
+
+        # Якщо мова передана користувачем – шукаємо її
+        if lang and lang in transcript_languages:
+            transcript = available_transcripts.find_transcript([lang]).fetch()
+        else:
+            # Якщо мову не вказано – пробуємо отримати автоматичні або будь-які доступні
+            try:
+                transcript = available_transcripts.find_generated_transcript(["uk", "en"]).fetch()
+            except:
+                transcript = available_transcripts.find_manually_created_transcript(["uk", "en"]).fetch()
+
+        # **ФІКС:** перевіряємо, чи `transcript` не `None`
+        if transcript is None:
+            logger.error(f"Transcript is None for video: {video_id}")
             return jsonify({"error": f"No subtitles found for video {video_id}."}), 400
 
         subtitles = "\n".join([entry["text"] for entry in transcript])
@@ -44,8 +58,8 @@ def get_transcript():
         logger.error(f"Subtitles are disabled for video: {video_id}")
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
     except NoTranscriptAvailable:
-        logger.error(f"No subtitles available for video: {video_id} in language: {lang}")
-        return jsonify({"error": f"No subtitles available for this video in language: {lang}."}), 400
+        logger.error(f"No subtitles available for video: {video_id}")
+        return jsonify({"error": f"No subtitles available for video {video_id}."}), 400
     except Exception as e:
         logger.error(f"Error fetching transcript for video: {video_id}. Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
