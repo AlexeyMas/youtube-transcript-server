@@ -15,7 +15,7 @@ COOKIES_PATH = "cookies.txt"
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    lang = request.args.get("lang")  # Мова (можна передавати будь-яку, якщо None – отримуємо всі доступні)
+    lang = request.args.get("lang")  # Мова (якщо None – отримуємо всі доступні)
 
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
@@ -28,11 +28,13 @@ def get_transcript():
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
 
-        # Отримуємо субтитри (спочатку шукаємо автоматичні, якщо немає – шукаємо будь-які)
-        try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang] if lang else None, cookies=cookies)
-        except NoTranscriptAvailable:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, cookies=cookies)
+        # Отримуємо субтитри
+        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang] if lang else None, cookies=cookies)
+
+        # **ФІКС:** перевіряємо, чи API повернув `None`
+        if transcript is None or not isinstance(transcript, list):
+            logger.error(f"Transcript returned None for video: {video_id}")
+            return jsonify({"error": f"No subtitles found for video {video_id}."}), 400
 
         subtitles = "\n".join([entry["text"] for entry in transcript])
 
