@@ -15,7 +15,7 @@ COOKIES_PATH = "cookies.txt"
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    lang = request.args.get("lang")  # Мова (можна передавати будь-яку, якщо None – отримуємо всі доступні)
+    lang = request.args.get("lang")  # Мова (якщо None – отримуємо всі доступні)
 
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
@@ -28,15 +28,11 @@ def get_transcript():
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
 
-        # **Отримуємо список доступних субтитрів**
+        # Отримуємо список доступних субтитрів
         available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookies)
 
-        # **Виводимо список доступних мов у лог**
-        transcript_languages = [t.language_code for t in available_transcripts]
-        logger.info(f"Available subtitles for {video_id}: {transcript_languages}")
-
-        # Якщо мова передана користувачем – шукаємо її
-        if lang and lang in transcript_languages:
+        # Якщо мова вказана, отримуємо її
+        if lang:
             transcript = available_transcripts.find_transcript([lang]).fetch()
         else:
             # Якщо мову не вказано – пробуємо отримати автоматичні або будь-які доступні
@@ -50,7 +46,9 @@ def get_transcript():
             logger.error(f"Transcript is None for video: {video_id}")
             return jsonify({"error": f"No subtitles found for video {video_id}."}), 400
 
+        # **ФІКС:** Декодуємо Unicode у читабельний текст
         subtitles = "\n".join([entry["text"] for entry in transcript])
+        subtitles = subtitles.encode("utf-8").decode("unicode_escape")  # <=== ФІКС
 
         return jsonify({"video_id": video_id, "transcript": subtitles})
 
