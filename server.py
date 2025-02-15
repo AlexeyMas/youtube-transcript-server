@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Шлях до файлу cookies.txt
-COOKIES_PATH = "cookies.txt"  # Замініть на актуальний шлях, якщо потрібно
+COOKIES_PATH = "cookies.txt"
 
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
