@@ -28,29 +28,24 @@ def get_transcript():
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
 
-        # Отримуємо список доступних субтитрів
-        available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-
-        # Якщо вказана конкретна мова – пробуємо отримати субтитри цією мовою
-        if lang:
-            transcript = available_transcripts.find_transcript([lang]).fetch()
-        else:
-            # Якщо мову не вказано – пробуємо отримати автоматичні або будь-які доступні
-            try:
-                transcript = available_transcripts.find_generated_transcript(["uk", "en"]).fetch()
-            except:
-                transcript = available_transcripts.find_manually_created_transcript(["uk", "en"]).fetch()
+        # Отримуємо субтитри (спочатку шукаємо автоматичні, якщо немає – шукаємо будь-які)
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang] if lang else None, cookies=cookies)
+        except NoTranscriptAvailable:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, cookies=cookies)
 
         subtitles = "\n".join([entry["text"] for entry in transcript])
 
         return jsonify({"video_id": video_id, "transcript": subtitles})
 
     except TranscriptsDisabled:
+        logger.error(f"Subtitles are disabled for video: {video_id}")
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
     except NoTranscriptAvailable:
-        return jsonify({"error": f"No subtitles available for video {video_id}."}), 400
+        logger.error(f"No subtitles available for video: {video_id} in language: {lang}")
+        return jsonify({"error": f"No subtitles available for this video in language: {lang}."}), 400
     except Exception as e:
-        logger.error(f"Error fetching transcript for video {video_id}: {str(e)}")
+        logger.error(f"Error fetching transcript for video: {video_id}. Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
