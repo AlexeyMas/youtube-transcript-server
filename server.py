@@ -28,32 +28,44 @@ def get_transcript():
         transcript = None
         try:
             transcript = available_transcripts.find_manually_created_transcript([lang])
-        except:
+        except Exception as e:
+            logger.warning(f"Manual transcript not found: {e}")
             try:
                 transcript = available_transcripts.find_generated_transcript([lang])
-            except:
+            except Exception as e2:
+                logger.warning(f"Generated transcript not found: {e2}")
                 transcript = None
 
         if transcript is None:
             all_langs = [t.language_code for t in available_transcripts]
             try:
                 transcript = available_transcripts.find_generated_transcript(all_langs)
-            except:
-                transcript = None
+            except Exception as e3:
+                logger.warning(f"No transcript in any language: {e3}")
+                return jsonify({"error": "No available transcripts."}), 400
 
-        if transcript is None:
-            return jsonify({"error": "No available transcripts."}), 400
+        # Якщо потрібен переклад
+        if transcript.language_code != lang:
+            if transcript.is_translatable:
+                transcript = transcript.translate(lang)
+            else:
+                logger.warning("Transcript is not translatable!")
+                return jsonify({"error": "Transcript not translatable to requested language."}), 400
 
-        if transcript.language_code != lang and transcript.is_translatable:
-            transcript = transcript.translate(lang)
+        # Перевіряємо, що fetch() не впаде
+        try:
+            subtitles = "\n".join([entry['text'] for entry in transcript.fetch()])
+        except Exception as e:
+            logger.error(f"Error in transcript.fetch(): {e}")
+            return jsonify({"error": f"Failed to fetch transcript: {e}"}), 500
 
-        subtitles = "\n".join([entry['text'] for entry in transcript.fetch()])
         return jsonify({"video_id": video_id, "transcript": subtitles})
 
     except TranscriptsDisabled:
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
     except Exception as e:
+        logger.error(f"General server error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, debug=True)
