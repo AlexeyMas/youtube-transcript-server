@@ -1,21 +1,19 @@
 from flask import Flask, request, jsonify
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptAvailable
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 import logging
 import os
 
 app = Flask(__name__)
 
-# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Шлях до файлу cookies.txt
 COOKIES_PATH = "cookies.txt"
 
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
-    lang = request.args.get("lang", "en")  # За замовчуванням - англійська
+    lang = request.args.get("lang", "en")
 
     if not video_id:
         return jsonify({"error": "Missing video_id"}), 400
@@ -27,7 +25,6 @@ def get_transcript():
         available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookies)
         logger.info(f"Available transcripts: {[str(t) for t in available_transcripts]}")
 
-        # Спробувати знайти ручний або авто з потрібною мовою
         transcript = None
         try:
             transcript = available_transcripts.find_manually_created_transcript([lang])
@@ -38,7 +35,6 @@ def get_transcript():
                 transcript = None
 
         if transcript is None:
-            # спробувати будь-який доступний, навіть якщо не співпадає lang
             all_langs = [t.language_code for t in available_transcripts]
             try:
                 transcript = available_transcripts.find_generated_transcript(all_langs)
@@ -48,7 +44,6 @@ def get_transcript():
         if transcript is None:
             return jsonify({"error": "No available transcripts."}), 400
 
-        # Якщо потрібен переклад
         if transcript.language_code != lang and transcript.is_translatable:
             transcript = transcript.translate(lang)
 
@@ -57,8 +52,6 @@ def get_transcript():
 
     except TranscriptsDisabled:
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
-    except NoTranscriptAvailable:
-        return jsonify({"error": f"No subtitles available for {video_id} in {lang}."}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
