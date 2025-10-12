@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 import logging
 import os
+import time
 
 app = Flask(__name__)
 
@@ -12,6 +13,7 @@ COOKIES_PATH = "cookies.txt"
 
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
+    start = time.time()
     video_id = request.args.get("video_id")
     lang = request.args.get("lang", "en")
 
@@ -32,9 +34,11 @@ def get_transcript():
             return jsonify({"error": str(e)}), 400
 
         subtitles = "\n".join([entry['text'] for entry in transcript])
+        logger.info(f"Elapsed time: {time.time()-start} сек")
         return jsonify({"video_id": video_id, "transcript": subtitles})
-
+    
     except Exception as e:
+        logger.info(f"Elapsed time: {time.time()-start} сек")
         logger.error(f"General server error: {e}")
         return jsonify({"error": str(e)}), 500
 
