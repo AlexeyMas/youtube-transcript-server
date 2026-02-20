@@ -4,6 +4,10 @@ import logging
 import os
 import random
 import time
+import re
+import glob
+import tempfile
+from yt_dlp import YoutubeDL
 
 app = Flask(__name__)
 
@@ -87,6 +91,67 @@ def fetch_transcript_with_retries(video_id: str, lang: str, cookies):
 
     raise last_error
 
+
+def parse_vtt_to_text(vtt_text: str) -> str:
+    lines = []
+    for raw_line in vtt_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.upper().startswith("WEBVTT") or line.startswith("NOTE"):
+            continue
+        if "-->" in line:
+            continue
+        if line.isdigit():
+            continue
+
+        # Видаляємо базові VTT/HTML-теги.
+        line = re.sub(r"<[^>]+>", "", line).strip()
+        if not line:
+            continue
+        lines.append(line)
+
+    # Прибираємо повтори сусідніх рядків.
+    deduplicated = []
+    for line in lines:
+        if not deduplicated or deduplicated[-1] != line:
+            deduplicated.append(line)
+    return "\n".join(deduplicated)
+
+
+def fetch_transcript_with_ytdlp(video_id: str, lang: str, cookies):
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    language_candidates = [lang, "en", "en-US"]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        ydl_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": language_candidates,
+            "subtitlesformat": "vtt",
+            "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+        }
+        if cookies:
+            ydl_opts["cookiefile"] = cookies
+
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([youtube_url])
+
+        vtt_files = sorted(glob.glob(os.path.join(temp_dir, f"{video_id}*.vtt")))
+        if not vtt_files:
+            raise NoTranscriptAvailable(f"No subtitles available for {video_id}.")
+
+        with open(vtt_files[0], "r", encoding="utf-8", errors="ignore") as file:
+            vtt_text = file.read()
+        parsed_text = parse_vtt_to_text(vtt_text)
+        if not parsed_text:
+            raise NoTranscriptAvailable(f"Subtitle file exists but transcript is empty for {video_id}.")
+        return parsed_text
+
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
@@ -108,9 +173,17 @@ def get_transcript():
         cookies = COOKIES_PATH if os.path.exists(COOKIES_PATH) else None
         if cookies:
             logger.info(f"Using cookies from {COOKIES_PATH}")
-        subtitles = fetch_transcript_with_retries(video_id=video_id, lang=lang, cookies=cookies)
+
+        source = "youtube_transcript_api"
+        try:
+            subtitles = fetch_transcript_with_retries(video_id=video_id, lang=lang, cookies=cookies)
+        except Exception as primary_error:
+            logger.warning("Primary transcript fetch failed for %s: %s", video_id, clean_error_message(str(primary_error)))
+            source = "yt_dlp_fallback"
+            subtitles = fetch_transcript_with_ytdlp(video_id=video_id, lang=lang, cookies=cookies)
+
         set_cached_transcript(cache_key, subtitles)
-        return jsonify({"video_id": video_id, "transcript": subtitles, "cached": False})
+        return jsonify({"video_id": video_id, "transcript": subtitles, "cached": False, "source": source})
 
     except TranscriptsDisabled:
         return jsonify({"error": "Subtitles are disabled for this video."}), 400
