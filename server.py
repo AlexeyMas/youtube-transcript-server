@@ -8,6 +8,7 @@ import re
 import glob
 import tempfile
 from yt_dlp import YoutubeDL
+from openai import OpenAI
 
 app = Flask(__name__)
 
@@ -20,6 +21,8 @@ COOKIES_PATH = os.getenv("COOKIES_PATH", "cookies.txt")
 CACHE_TTL_SECONDS = int(os.getenv("TRANSCRIPT_CACHE_TTL_SECONDS", "3600"))
 MAX_RETRIES = int(os.getenv("YOUTUBE_RETRY_ATTEMPTS", "3"))
 BASE_RETRY_DELAY = float(os.getenv("YOUTUBE_RETRY_BASE_DELAY", "1.0"))
+ENABLE_ASR_FALLBACK = os.getenv("ENABLE_ASR_FALLBACK", "true").lower() == "true"
+OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 
 # Простий in-memory кеш, щоб зменшити кількість повторних запитів до YouTube.
 transcript_cache = {}
@@ -163,6 +166,57 @@ def fetch_transcript_with_ytdlp(video_id: str, lang: str, cookies):
             raise NoTranscriptAvailable(f"Subtitle file exists but transcript is empty for {video_id}.")
         return parsed_text
 
+
+def download_audio_with_ytdlp(video_id: str, cookies, output_dir: str) -> str:
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": output_template,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "overwrites": True,
+    }
+    if cookies:
+        ydl_opts["cookiefile"] = cookies
+
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([youtube_url])
+
+    candidates = sorted(glob.glob(os.path.join(output_dir, f"{video_id}.*")))
+    for file_path in candidates:
+        if os.path.isfile(file_path):
+            return file_path
+    raise RuntimeError(f"Failed to download audio for {video_id}.")
+
+
+def transcribe_audio_with_openai(audio_path: str, lang: str) -> str:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("ASR fallback is unavailable: OPENAI_API_KEY is not configured on the server.")
+
+    client = OpenAI(api_key=api_key)
+    request_kwargs = {
+        "model": OPENAI_TRANSCRIBE_MODEL,
+    }
+    if lang and len(lang) <= 5:
+        request_kwargs["language"] = lang
+
+    with open(audio_path, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(file=audio_file, **request_kwargs)
+
+    text = getattr(transcript, "text", None)
+    if not text:
+        raise RuntimeError("ASR fallback returned empty transcription.")
+    return text
+
+
+def fetch_transcript_with_asr(video_id: str, lang: str, cookies) -> str:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        audio_path = download_audio_with_ytdlp(video_id=video_id, cookies=cookies, output_dir=temp_dir)
+        return transcribe_audio_with_openai(audio_path=audio_path, lang=lang)
+
 @app.route("/get_transcript", methods=["GET"])
 def get_transcript():
     video_id = request.args.get("video_id")
@@ -190,8 +244,15 @@ def get_transcript():
             subtitles = fetch_transcript_with_retries(video_id=video_id, lang=lang, cookies=cookies)
         except Exception as primary_error:
             logger.warning("Primary transcript fetch failed for %s: %s", video_id, clean_error_message(str(primary_error)))
-            source = "yt_dlp_fallback"
-            subtitles = fetch_transcript_with_ytdlp(video_id=video_id, lang=lang, cookies=cookies)
+            try:
+                source = "yt_dlp_fallback"
+                subtitles = fetch_transcript_with_ytdlp(video_id=video_id, lang=lang, cookies=cookies)
+            except Exception as ytdlp_error:
+                logger.warning("Subtitle fallback via yt-dlp failed for %s: %s", video_id, clean_error_message(str(ytdlp_error)))
+                if not ENABLE_ASR_FALLBACK:
+                    raise ytdlp_error
+                source = "openai_asr_fallback"
+                subtitles = fetch_transcript_with_asr(video_id=video_id, lang=lang, cookies=cookies)
 
         set_cached_transcript(cache_key, subtitles)
         return jsonify({"video_id": video_id, "transcript": subtitles, "cached": False, "source": source})
