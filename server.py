@@ -30,6 +30,17 @@ def is_rate_limited(message: str) -> bool:
     return "429" in lowered or "too many requests" in lowered
 
 
+def is_bot_challenge(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        "sign in to confirm you're not a bot" in lowered
+        or "confirm you’re not a bot" in lowered
+        or "not a bot" in lowered
+        or "--cookies-from-browser" in lowered
+        or "use --cookies for the authentication" in lowered
+    )
+
+
 def should_retry(exception: Exception) -> bool:
     return is_rate_limited(str(exception))
 
@@ -191,6 +202,12 @@ def get_transcript():
         return jsonify({"error": f"No subtitles available for {video_id} in {lang}."}), 400
     except Exception as e:
         message = clean_error_message(str(e))
+        if is_bot_challenge(message):
+            logger.warning("YouTube bot challenge for %s: %s", video_id, message)
+            return jsonify({
+                "error": "YouTube blocked automated subtitle access for now. Try again later or refresh server cookies.",
+                "code": "youtube_bot_challenge"
+            }), 503
         if is_rate_limited(message):
             logger.warning("Rate limited by YouTube for %s: %s", video_id, message)
             return jsonify({
