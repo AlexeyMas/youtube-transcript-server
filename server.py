@@ -7,6 +7,11 @@ import time
 import re
 import glob
 import tempfile
+import json
+import html as html_lib
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from yt_dlp import YoutubeDL
 from openai import OpenAI
 
@@ -133,6 +138,111 @@ def parse_vtt_to_text(vtt_text: str) -> str:
     return "\n".join(deduplicated)
 
 
+def extract_json_array(raw_text: str, start_index: int) -> str:
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for i in range(start_index, len(raw_text)):
+        ch = raw_text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "\"":
+                in_string = False
+            continue
+
+        if ch == "\"":
+            in_string = True
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return raw_text[start_index:i + 1]
+
+    raise ValueError("Failed to extract captionTracks JSON array.")
+
+
+def parse_timedtext_xml(xml_text: str) -> str:
+    root = ET.fromstring(xml_text)
+    lines = []
+    for node in root.findall(".//text"):
+        text_value = "".join(node.itertext())
+        text_value = html_lib.unescape(text_value).strip()
+        if text_value:
+            lines.append(text_value)
+    return "\n".join(lines)
+
+
+def fetch_transcript_with_timedtext(video_id: str, lang: str) -> str:
+    watch_url = f"https://www.youtube.com/watch?v={video_id}&hl=en"
+    request = urllib.request.Request(
+        watch_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        html_text = response.read().decode("utf-8", errors="ignore")
+
+    marker = "\"captionTracks\":"
+    marker_index = html_text.find(marker)
+    if marker_index == -1:
+        raise NoTranscriptAvailable(f"No captionTracks found for {video_id}.")
+
+    array_start = html_text.find("[", marker_index)
+    if array_start == -1:
+        raise NoTranscriptAvailable(f"captionTracks array is missing for {video_id}.")
+
+    tracks_json = extract_json_array(html_text, array_start)
+    tracks = json.loads(tracks_json)
+    if not tracks:
+        raise NoTranscriptAvailable(f"No subtitle tracks in captionTracks for {video_id}.")
+
+    selected = None
+    for track in tracks:
+        if track.get("languageCode") == lang:
+            selected = track
+            break
+    if selected is None:
+        for track in tracks:
+            if track.get("kind") == "asr":
+                selected = track
+                break
+    if selected is None:
+        selected = tracks[0]
+
+    base_url = selected.get("baseUrl")
+    if not base_url:
+        raise NoTranscriptAvailable(f"Selected subtitle track has no baseUrl for {video_id}.")
+
+    parsed = urllib.parse.urlparse(base_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    if lang and query.get("lang", [""])[0] != lang:
+        query["tlang"] = [lang]
+    new_query = urllib.parse.urlencode(query, doseq=True)
+    timedtext_url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+    timedtext_request = urllib.request.Request(
+        timedtext_url,
+        headers={"User-Agent": request.headers["User-Agent"]},
+    )
+    with urllib.request.urlopen(timedtext_request, timeout=20) as timedtext_response:
+        xml_text = timedtext_response.read().decode("utf-8", errors="ignore")
+
+    transcript = parse_timedtext_xml(xml_text)
+    if not transcript:
+        raise NoTranscriptAvailable(f"Timedtext response is empty for {video_id}.")
+    return transcript
+
+
 def fetch_transcript_with_ytdlp(video_id: str, lang: str, cookies):
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
     language_candidates = [lang, "en", "en-US"]
@@ -245,14 +355,19 @@ def get_transcript():
         except Exception as primary_error:
             logger.warning("Primary transcript fetch failed for %s: %s", video_id, clean_error_message(str(primary_error)))
             try:
-                source = "yt_dlp_fallback"
-                subtitles = fetch_transcript_with_ytdlp(video_id=video_id, lang=lang, cookies=cookies)
-            except Exception as ytdlp_error:
-                logger.warning("Subtitle fallback via yt-dlp failed for %s: %s", video_id, clean_error_message(str(ytdlp_error)))
-                if not ENABLE_ASR_FALLBACK:
-                    raise ytdlp_error
-                source = "openai_asr_fallback"
-                subtitles = fetch_transcript_with_asr(video_id=video_id, lang=lang, cookies=cookies)
+                source = "timedtext_fallback"
+                subtitles = fetch_transcript_with_timedtext(video_id=video_id, lang=lang)
+            except Exception as timedtext_error:
+                logger.warning("Timedtext fallback failed for %s: %s", video_id, clean_error_message(str(timedtext_error)))
+                try:
+                    source = "yt_dlp_fallback"
+                    subtitles = fetch_transcript_with_ytdlp(video_id=video_id, lang=lang, cookies=cookies)
+                except Exception as ytdlp_error:
+                    logger.warning("Subtitle fallback via yt-dlp failed for %s: %s", video_id, clean_error_message(str(ytdlp_error)))
+                    if not ENABLE_ASR_FALLBACK:
+                        raise ytdlp_error
+                    source = "openai_asr_fallback"
+                    subtitles = fetch_transcript_with_asr(video_id=video_id, lang=lang, cookies=cookies)
 
         set_cached_transcript(cache_key, subtitles)
         return jsonify({"video_id": video_id, "transcript": subtitles, "cached": False, "source": source})
