@@ -8,6 +8,7 @@ import re
 import glob
 import tempfile
 import json
+import base64
 import html as html_lib
 import urllib.parse
 import urllib.request
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Шлях до файлу cookies.txt
 COOKIES_PATH = os.getenv("COOKIES_PATH", "cookies.txt")
+COOKIES_B64 = os.getenv("COOKIES_B64", "").strip()
 CACHE_TTL_SECONDS = int(os.getenv("TRANSCRIPT_CACHE_TTL_SECONDS", "3600"))
 MAX_RETRIES = int(os.getenv("YOUTUBE_RETRY_ATTEMPTS", "3"))
 BASE_RETRY_DELAY = float(os.getenv("YOUTUBE_RETRY_BASE_DELAY", "1.0"))
@@ -31,6 +33,31 @@ OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 
 # Простий in-memory кеш, щоб зменшити кількість повторних запитів до YouTube.
 transcript_cache = {}
+_runtime_cookies_path = None
+
+
+def resolve_cookies_path() -> str | None:
+    global _runtime_cookies_path
+
+    if COOKIES_B64:
+        if _runtime_cookies_path and os.path.exists(_runtime_cookies_path):
+            return _runtime_cookies_path
+        try:
+            decoded = base64.b64decode(COOKIES_B64).decode("utf-8")
+            temp_file = tempfile.NamedTemporaryFile(prefix="yt-cookies-", suffix=".txt", delete=False, mode="w", encoding="utf-8")
+            temp_file.write(decoded)
+            temp_file.flush()
+            temp_file.close()
+            _runtime_cookies_path = temp_file.name
+            logger.info("Using cookies from COOKIES_B64 env.")
+            return _runtime_cookies_path
+        except Exception:
+            logger.exception("Failed to decode COOKIES_B64. Falling back to file-based cookies.")
+
+    if os.path.exists(COOKIES_PATH):
+        logger.info("Using cookies from %s", COOKIES_PATH)
+        return COOKIES_PATH
+    return None
 
 
 def is_rate_limited(message: str) -> bool:
@@ -344,10 +371,7 @@ def get_transcript():
     try:
         logger.info(f"Fetching transcript for video: {video_id}, language: {lang}")
 
-        # Перевіряємо, чи файл cookies.txt існує
-        cookies = COOKIES_PATH if os.path.exists(COOKIES_PATH) else None
-        if cookies:
-            logger.info(f"Using cookies from {COOKIES_PATH}")
+        cookies = resolve_cookies_path()
 
         source = "youtube_transcript_api"
         try:
